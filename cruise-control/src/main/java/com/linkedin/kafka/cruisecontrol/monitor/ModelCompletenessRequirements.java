@@ -5,7 +5,8 @@
 package com.linkedin.kafka.cruisecontrol.monitor;
 import java.util.HashMap;
 import java.util.Map;
-
+import com.linkedin.kafka.cruisecontrol.servlet.response.JsonResponseField;
+import com.linkedin.kafka.cruisecontrol.servlet.response.JsonResponseClass;
 /**
  * This class is created to describe the requirements of the model. In Cruise Control, the requirement
  * of the monitored performance metrics differs in different scenarios. For example, RackAwareness goal do not really
@@ -30,9 +31,13 @@ import java.util.Map;
  * </ul>
  *
  */
+@JsonResponseClass
 public class ModelCompletenessRequirements {
+  @JsonResponseField
   private static final String REQUIRED_NUM_SNAPSHOTS = "requiredNumSnapshots";
+  @JsonResponseField
   private static final String MIN_MONITORED_PARTITION_PERCENTAGE = "minMonitoredPartitionsPercentage";
+  @JsonResponseField
   private static final String INCLUDE_ALL_TOPICS = "includeAllTopics";
   private final int _minRequiredNumWindows;
   private final double _minMonitoredPartitionsPercentage;
@@ -42,7 +47,7 @@ public class ModelCompletenessRequirements {
    * Constructor for the requirements.
    * @param minNumValidWindows the minimum number of valid windows to generate the model. Tha value must positive.
    * @param minValidPartitionsRatio The minimum required percentage of monitored partitions.
-   * @param includeAllTopics whether all the topics should be included to the time window. When set to true, all the
+   * @param includeAllTopics whether all the topics should be included to the time window. When set to {@code true}, all the
    *                         topics will be included even when there is not enough snapshots. An empty snapshot will
    *                         be used if there is no sample for a partition.
    */
@@ -50,12 +55,10 @@ public class ModelCompletenessRequirements {
                                        double minValidPartitionsRatio,
                                        boolean includeAllTopics) {
     if (minNumValidWindows <= 0) {
-      throw new IllegalArgumentException("Invalid minNumValidWindows " + minNumValidWindows +
-                                             ". The minNumValidWindows must be positive.");
+      throw new IllegalArgumentException("Invalid minNumValidWindows " + minNumValidWindows + ". The minNumValidWindows must be positive.");
     }
     if (minValidPartitionsRatio < 0 || minValidPartitionsRatio > 1) {
-      throw new IllegalArgumentException("Invalid minValidPartitionsRatio "
-                                             + minValidPartitionsRatio + ". The value must be between 0 and 1"
+      throw new IllegalArgumentException("Invalid minValidPartitionsRatio " + minValidPartitionsRatio + ". The value must be between 0 and 1"
                                              + ", both inclusive.");
     }
     _minRequiredNumWindows = minNumValidWindows;

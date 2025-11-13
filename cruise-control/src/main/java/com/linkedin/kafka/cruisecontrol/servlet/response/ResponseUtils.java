@@ -5,66 +5,79 @@
 package com.linkedin.kafka.cruisecontrol.servlet.response;
 
 import com.google.gson.Gson;
-import com.linkedin.kafka.cruisecontrol.KafkaCruiseControl;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.linkedin.cruisecontrol.http.CruiseControlRequestContext;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
+import com.linkedin.kafka.cruisecontrol.config.constants.WebServerConfig;
+import io.vertx.ext.web.RoutingContext;
+import org.apache.kafka.common.config.AbstractConfig;
+import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
-import javax.servlet.http.HttpServletResponse;
 
 
 /**
  * The util class for Kafka Cruise Control response.
  */
-public class ResponseUtils {
+public final class ResponseUtils {
   public static final int JSON_VERSION = 1;
   public static final String VERSION = "version";
+  @JsonResponseField
   public static final String MESSAGE = "message";
-  private static final String STACK_TRACE = "stackTrace";
-  private static final String ERROR_MESSAGE = "errorMessage";
 
   private ResponseUtils() {
   }
 
-  static void setResponseCode(HttpServletResponse response, int code, boolean json, KafkaCruiseControlConfig config) {
+  /**
+   *
+   * @param response The servlet response.
+   * @param code Status code
+   * @param json Write the response in JSON or not
+   * @param config CruiseControlConfig
+   */
+  public static void setResponseCode(HttpServletResponse response, int code, boolean json, KafkaCruiseControlConfig config) {
     response.setStatus(code);
     response.setContentType(json ? "application/json" : "text/plain");
     response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-    boolean corsEnabled = config == null ? false : config.getBoolean(KafkaCruiseControlConfig.WEBSERVER_HTTP_CORS_ENABLED_CONFIG);
+    boolean corsEnabled = config != null && config.getBoolean(WebServerConfig.WEBSERVER_HTTP_CORS_ENABLED_CONFIG);
     if (corsEnabled) {
       // These headers are exposed to the browser
       response.setHeader("Access-Control-Allow-Origin",
-                         config.getString(KafkaCruiseControlConfig.WEBSERVER_HTTP_CORS_ORIGIN_CONFIG));
+                         config.getString(WebServerConfig.WEBSERVER_HTTP_CORS_ORIGIN_CONFIG));
       response.setHeader("Access-Control-Expose-Headers",
-                         config.getString(KafkaCruiseControlConfig.WEBSERVER_HTTP_CORS_EXPOSEHEADERS_CONFIG));
+                         config.getString(WebServerConfig.WEBSERVER_HTTP_CORS_EXPOSEHEADERS_CONFIG));
       response.setHeader("Access-Control-Allow-Credentials", "true");
     }
   }
 
-  static String getBaseJSONString(String message) {
-    Map<String, Object> jsonResponse = new HashMap<>(2);
-    jsonResponse.put(VERSION, JSON_VERSION);
-    jsonResponse.put(MESSAGE, message);
-    return new Gson().toJson(jsonResponse);
+  /**
+   *
+   * @param context The routing context
+   * @param code Status code
+   * @param config CruiseControlConfig
+   */
+  public static void setResponseCode(RoutingContext context, int code, AbstractConfig config) {
+    context.response().setStatusCode(code);
+    boolean corsEnabled = config != null && config.getBoolean(WebServerConfig.WEBSERVER_HTTP_CORS_ENABLED_CONFIG);
+    if (corsEnabled) {
+      // These headers are exposed to the browser
+      context.response().putHeader("Access-Control-Allow-Origin",
+              config.getString(WebServerConfig.WEBSERVER_HTTP_CORS_ORIGIN_CONFIG));
+      context.response().putHeader("Access-Control-Expose-Headers",
+              config.getString(WebServerConfig.WEBSERVER_HTTP_CORS_EXPOSEHEADERS_CONFIG));
+      context.response().putHeader("Access-Control-Allow-Credentials", "true");
+    }
   }
 
-  static void writeResponseToOutputStream(HttpServletResponse response,
-                                          int responseCode,
-                                          boolean json,
-                                          String responseMessage,
-                                          KafkaCruiseControlConfig config)
-      throws IOException {
-    OutputStream out = response.getOutputStream();
-    setResponseCode(response, responseCode, json, config);
-    response.addHeader("Cruise-Control-Version", KafkaCruiseControl.cruiseControlVersion());
-    response.addHeader("Cruise-Control-Commit_Id", KafkaCruiseControl.cruiseControlCommitId());
-    response.setContentLength(responseMessage.length());
-    out.write(responseMessage.getBytes(StandardCharsets.UTF_8));
-    out.flush();
+  static String getBaseJsonString(String message) {
+    Map<String, Object> jsonResponse = Map.of(VERSION, JSON_VERSION, MESSAGE, message);
+    return new Gson().toJson(jsonResponse);
   }
 
   /**
@@ -86,32 +99,112 @@ public class ResponseUtils {
   /**
    * Write error response to the output stream.
    *
-   * @param response HTTP response to return to user.
+   * @param requestContext The request context
    * @param e Exception (if any) corresponding to the error, {@code null} otherwise.
    * @param errorMessage Error message to return in the response message.
    * @param responseCode HTTP Status code to indicate the error.
-   * @param json True if json, false otherwise.
-   * @param config The configurations for Cruise Control.
+   * @param json {@code true} if json, {@code false} otherwise.
+   * @param wantJsonSchema {@code true} for json error response, {@code false} otherwise.
    */
-  public static void writeErrorResponse(HttpServletResponse response,
+  public static void writeErrorResponse(CruiseControlRequestContext requestContext,
                                         Exception e,
                                         String errorMessage,
                                         int responseCode,
                                         boolean json,
-                                        KafkaCruiseControlConfig config)
+                                        boolean wantJsonSchema)
       throws IOException {
     String responseMessage;
+    ErrorResponse errorResponse = new ErrorResponse(e, errorMessage);
     if (json) {
-      Map<String, Object> exceptionMap = new HashMap<>();
-      exceptionMap.put(VERSION, JSON_VERSION);
-      exceptionMap.put(STACK_TRACE, stackTrace(e));
-      exceptionMap.put(ERROR_MESSAGE, errorMessage);
       Gson gson = new Gson();
-      responseMessage = gson.toJson(exceptionMap);
+      responseMessage = gson.toJson(errorResponse.getJsonStructure());
     } else {
-      responseMessage = errorMessage == null ? "" : errorMessage;
+      responseMessage = errorResponse.toString();
     }
     // Send the CORS Task ID header as part of this error response if 2-step verification is enabled.
-    writeResponseToOutputStream(response, responseCode, json, responseMessage, config);
+    requestContext.writeResponseToOutputStream(responseCode, json, wantJsonSchema, responseMessage);
+  }
+
+  /**
+   *
+   * @param responseMessage The response message string
+   * @return the JSON schema of the response
+   */
+  public static String getJsonSchema(String responseMessage) {
+    JsonElement response = new JsonParser().parse(responseMessage);
+    return convertNodeToStringSchemaNode(response, null);
+  }
+
+  private static String convertNodeToStringSchemaNode(JsonElement node, String key) {
+    StringBuilder result = new StringBuilder();
+
+    if (key != null) {
+      result.append("\"" + key + "\": { \"type\": \"");
+    } else {
+      result.append("{ \"type\": \"");
+    }
+    if (node.isJsonArray()) {
+      result.append("array\"");
+      JsonArray arr = node.getAsJsonArray();
+      if (arr.size() > 0) {
+        result.append(", \"items\": [");
+        // Generate schema based on the first item of the array, since the schema should be consistent between elements in the array.
+        result.append(convertNodeToStringSchemaNode(arr.get(0), null));
+        result.append("]");
+      }
+      result.append("}");
+    } else if (node.isJsonPrimitive()) {
+      if (node.getAsJsonPrimitive().isBoolean()) {
+        result.append("boolean\" }");
+      } else if (node.getAsJsonPrimitive().isNumber()) {
+        result.append("number\" }");
+      } else if (node.getAsJsonPrimitive().isString()) {
+        result.append("string\" }");
+      }
+    } else if (node.isJsonObject()) {
+      result.append("object\", \"properties\": ");
+      result.append("{");
+      for (Iterator<Map.Entry<String, JsonElement>> iterator = node.getAsJsonObject().entrySet().iterator(); iterator.hasNext(); ) {
+        Map.Entry<String, JsonElement> entry = iterator.next();
+        JsonElement child = entry.getValue();
+
+        result.append(convertNodeToStringSchemaNode(child, entry.getKey()));
+        if (iterator.hasNext()) {
+          result.append(",");
+        }
+      }
+      result.append("}}");
+    } else if (node.isJsonNull()) {
+      result.append("}");
+    }
+
+    return result.toString();
+  }
+
+  @JsonResponseClass
+  public static class ErrorResponse {
+    @JsonResponseField
+    private static final String STACK_TRACE = "stackTrace";
+    @JsonResponseField
+    private static final String ERROR_MESSAGE = "errorMessage";
+    private final Exception _exception;
+    private final String _errorMessage;
+
+    ErrorResponse(Exception exception, String errorMessage) {
+      _errorMessage = errorMessage;
+      _exception = exception;
+    }
+
+    @Override
+    public String toString() {
+      return _errorMessage == null ? "" : _errorMessage;
+    }
+
+    /**
+     * @return The map describing the error.
+     */
+    public Map<String, Object> getJsonStructure() {
+      return Map.of(VERSION, JSON_VERSION, STACK_TRACE, stackTrace(_exception), ERROR_MESSAGE, _errorMessage);
+    }
   }
 }

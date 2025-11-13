@@ -10,6 +10,7 @@ import com.linkedin.kafka.cruisecontrol.common.ClusterProperty;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
 import com.linkedin.kafka.cruisecontrol.KafkaCruiseControlUnitTestUtils;
 import com.linkedin.kafka.cruisecontrol.common.TestConstants;
+import com.linkedin.kafka.cruisecontrol.config.constants.AnalyzerConfig;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
 import com.linkedin.kafka.cruisecontrol.model.RandomCluster;
 import java.util.Arrays;
@@ -37,12 +38,12 @@ import static org.junit.Assert.assertTrue;
 @RunWith(Parameterized.class)
 public class IntraBrokerRebalanceTest {
 
-  private int _testId;
-  private Map<ClusterProperty, Number> _modifiedProperties;
-  private List<String> _goalNameByPriority;
-  private BalancingConstraint _balancingConstraint;
-  private Set<String> _excludedTopics;
-  private List<OptimizationVerifier.Verification> _verifications;
+  private final int _testId;
+  private final Map<ClusterProperty, Number> _modifiedProperties;
+  private final List<String> _goalNameByPriority;
+  private final BalancingConstraint _balancingConstraint;
+  private final Set<String> _excludedTopics;
+  private final List<OptimizationVerifier.Verification> _verifications;
 
   /**
    * Constructor of Self Healing Test.
@@ -104,7 +105,7 @@ public class IntraBrokerRebalanceTest {
     List<String> goalNameByPriority = Arrays.asList(IntraBrokerDiskCapacityGoal.class.getName(),
                                                     IntraBrokerDiskUsageDistributionGoal.class.getName());
     Properties props = KafkaCruiseControlUnitTestUtils.getKafkaCruiseControlProperties();
-    props.setProperty(KafkaCruiseControlConfig.MAX_REPLICAS_PER_BROKER_CONFIG, Long.toString(2000L));
+    props.setProperty(AnalyzerConfig.MAX_REPLICAS_PER_BROKER_CONFIG, Long.toString(2000L));
     BalancingConstraint balancingConstraint = new BalancingConstraint(new KafkaCruiseControlConfig(props));
     balancingConstraint.setResourceBalancePercentage(TestConstants.LOW_BALANCE_PERCENTAGE);
     balancingConstraint.setCapacityThreshold(TestConstants.MEDIUM_CAPACITY_THRESHOLD);
@@ -124,7 +125,7 @@ public class IntraBrokerRebalanceTest {
     p.add(params(testId++, jbodCluster, goalNameByPriority, balancingConstraint, Collections.emptySet(), verifications));
 
     // -- TEST DECK #2: CLUSTER WITH DEAD&BROKEN BROKER.
-    Set<String> excludedTopics = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(T1, T2)));
+    Set<String> excludedTopics = Set.of(T1, T2);
     // Test: Single Goal.
     for (int i = 0; i < goalNameByPriority.size(); i++) {
       testGoal = goalNameByPriority.subList(i, i + 1);

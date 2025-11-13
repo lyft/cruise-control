@@ -20,13 +20,9 @@ import java.util.stream.Collectors;
 import static com.linkedin.kafka.cruisecontrol.servlet.response.ResponseUtils.JSON_VERSION;
 import static com.linkedin.kafka.cruisecontrol.servlet.response.ResponseUtils.VERSION;
 
-
+@JsonResponseClass
 public class PartitionLoadState extends AbstractCruiseControlResponse {
-  protected static final String TOPIC = "topic";
-  protected static final String PARTITION = "partition";
-  protected static final String LEADER = "leader";
-  protected static final String FOLLOWERS = "followers";
-  protected static final String MSG_IN = "msg_in";
+  @JsonResponseField
   protected static final String RECORDS = "records";
   protected final List<Partition> _sortedPartitions;
   protected final boolean _wantMaxLoad;
@@ -69,7 +65,7 @@ public class PartitionLoadState extends AbstractCruiseControlResponse {
       if (++numEntries > _entries) {
         break;
       }
-      List<Integer> followers = p.followers().stream().map((replica) -> replica.broker().id()).collect(Collectors.toList());
+      List<Integer> followers = p.followers().stream().map(replica -> replica.broker().id()).collect(Collectors.toList());
       sb.append(String.format("%" + _topicNameLength + "s%10s%30s%19.6f%19.3f%19.3f%19.3f%19.3f%n",
                               p.leader().topicPartition(),
                               p.leader().broker().id(),
@@ -87,7 +83,7 @@ public class PartitionLoadState extends AbstractCruiseControlResponse {
    * Skips the partition if it does not match the requested topic pattern, or is out of the requested partition scope.
    *
    * @param partition Partition to check whether be included in the response.
-   * @return True to skip partition, false otherwise.
+   * @return {@code true} to skip partition, {@code false} otherwise.
    */
   private boolean shouldSkipPartition(Partition partition) {
     return (_topic != null && !_topic.matcher(partition.topicPartition().topic()).matches())
@@ -98,13 +94,13 @@ public class PartitionLoadState extends AbstractCruiseControlResponse {
   @Override
   protected void discardIrrelevantAndCacheRelevant(CruiseControlParameters parameters) {
     // Cache relevant response.
-    _cachedResponse = parameters.json() ? getJSONString() : getPlaintext();
+    _cachedResponse = parameters.json() ? getJsonString() : getPlaintext();
     // Discard irrelevant response.
     _sortedPartitions.clear();
     _topic = null;
   }
 
-  protected String getJSONString() {
+  protected String getJsonString() {
     Map<String, Object> partitionMap = new HashMap<>();
     List<Object> partitionList = new ArrayList<>();
     partitionMap.put(VERSION, JSON_VERSION);
@@ -116,21 +112,41 @@ public class PartitionLoadState extends AbstractCruiseControlResponse {
       if (++numEntries > _entries) {
         break;
       }
-      List<Integer> followers = p.followers().stream().map((replica) -> replica.broker().id()).collect(Collectors.toList());
-      Map<String, Object> record = new HashMap<>();
-      record.put(TOPIC, p.leader().topicPartition().topic());
-      record.put(PARTITION, p.leader().topicPartition().partition());
-      record.put(LEADER, p.leader().broker().id());
-      record.put(FOLLOWERS, followers);
-      record.put(Resource.CPU.resource(), p.leader().load().expectedUtilizationFor(Resource.CPU, _wantMaxLoad, _wantAvgLoad));
-      record.put(Resource.DISK.resource(), p.leader().load().expectedUtilizationFor(Resource.DISK, _wantMaxLoad, _wantAvgLoad));
-      record.put(Resource.NW_IN.resource(), p.leader().load().expectedUtilizationFor(Resource.NW_IN, _wantMaxLoad, _wantAvgLoad));
-      record.put(Resource.NW_OUT.resource(), p.leader().load().expectedUtilizationFor(Resource.NW_OUT, _wantMaxLoad, _wantAvgLoad));
-      record.put(MSG_IN, p.leader().load().expectedUtilizationFor(KafkaMetricDef.MESSAGE_IN_RATE, _wantMaxLoad, _wantAvgLoad));
-      partitionList.add(record);
+      partitionList.add(new PartitionLoadRecord(p).getJsonStructure());
     }
     partitionMap.put(RECORDS, partitionList);
     Gson gson = new Gson();
     return gson.toJson(partitionMap);
+  }
+
+  @JsonResponseClass
+  @JsonResponseExternalFields(Resource.class)
+  protected class PartitionLoadRecord {
+    @JsonResponseField
+    protected static final String TOPIC = "topic";
+    @JsonResponseField
+    protected static final String PARTITION = "partition";
+    @JsonResponseField
+    protected static final String LEADER = "leader";
+    @JsonResponseField
+    protected static final String FOLLOWERS = "followers";
+    @JsonResponseField
+    protected static final String MSG_IN = "msg_in";
+    protected Partition _partition;
+
+    PartitionLoadRecord(Partition partition) {
+      _partition = partition;
+    }
+
+    protected Map<String, Object> getJsonStructure() {
+      List<Integer> followers = _partition.followers().stream().map(replica -> replica.broker().id()).collect(Collectors.toList());
+      return Map.of(TOPIC, _partition.leader().topicPartition().topic(), PARTITION, _partition.leader().topicPartition().partition(),
+                    LEADER, _partition.leader().broker().id(), FOLLOWERS, followers,
+                    Resource.CPU.resource(), _partition.leader().load().expectedUtilizationFor(Resource.CPU, _wantMaxLoad, _wantAvgLoad),
+                    Resource.DISK.resource(), _partition.leader().load().expectedUtilizationFor(Resource.DISK, _wantMaxLoad, _wantAvgLoad),
+                    Resource.NW_IN.resource(), _partition.leader().load().expectedUtilizationFor(Resource.NW_IN, _wantMaxLoad, _wantAvgLoad),
+                    Resource.NW_OUT.resource(), _partition.leader().load().expectedUtilizationFor(Resource.NW_OUT, _wantMaxLoad, _wantAvgLoad),
+                    MSG_IN, _partition.leader().load().expectedUtilizationFor(KafkaMetricDef.MESSAGE_IN_RATE, _wantMaxLoad, _wantAvgLoad));
+    }
   }
 }

@@ -4,9 +4,14 @@
 
 package com.linkedin.kafka.cruisecontrol.servlet.handler.async.runnable;
 
+import com.linkedin.kafka.cruisecontrol.KafkaCruiseControl;
 import com.linkedin.kafka.cruisecontrol.KafkaCruiseControlUtils;
+import com.linkedin.kafka.cruisecontrol.analyzer.OptimizationOptions;
 import com.linkedin.kafka.cruisecontrol.analyzer.kafkaassigner.KafkaAssignerDiskUsageDistributionGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.kafkaassigner.KafkaAssignerEvenRackAwareGoal;
+import com.linkedin.kafka.cruisecontrol.async.progress.OperationProgress;
+import com.linkedin.kafka.cruisecontrol.async.progress.WaitingForOngoingExecutionToStop;
+import com.linkedin.kafka.cruisecontrol.executor.ExecutorState;
 import com.linkedin.kafka.cruisecontrol.executor.strategy.ReplicaMovementStrategy;
 import com.linkedin.kafka.cruisecontrol.model.Broker;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
@@ -14,7 +19,6 @@ import com.linkedin.kafka.cruisecontrol.monitor.ModelCompletenessRequirements;
 import com.linkedin.kafka.cruisecontrol.servlet.parameters.ParameterUtils;
 import com.linkedin.kafka.cruisecontrol.servlet.response.CruiseControlState;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -30,8 +34,12 @@ import org.apache.kafka.common.PartitionInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutorState.State.NO_TASK_IN_PROGRESS;
+import static com.linkedin.kafka.cruisecontrol.monitor.MonitorUtils.getRackHandleNull;
+import static com.linkedin.cruisecontrol.common.utils.Utils.validateNotNull;
 
-public class RunnableUtils {
+
+public final class RunnableUtils {
   private static final Logger LOG = LoggerFactory.getLogger(KafkaCruiseControlUtils.class);
   // Common self healing constants used in runnables.
   public static final boolean SELF_HEALING_DRYRUN = false;
@@ -44,48 +52,46 @@ public class RunnableUtils {
   public static final ModelCompletenessRequirements SELF_HEALING_MODEL_COMPLETENESS_REQUIREMENTS = null;
   public static final boolean SELF_HEALING_SKIP_URP_DEMOTION = true;
   public static final boolean SELF_HEALING_EXCLUDE_FOLLOWER_DEMOTION = true;
+  public static final boolean SELF_HEALING_IS_TRIGGERED_BY_USER_REQUEST = false;
+  public static final boolean SELF_HEALING_FAST_MODE = true;
   private static final Set<String> KAFKA_ASSIGNER_GOALS =
-      Collections.unmodifiableSet(new HashSet<>(Arrays.asList(KafkaAssignerEvenRackAwareGoal.class.getSimpleName(),
-                                                              KafkaAssignerDiskUsageDistributionGoal.class.getSimpleName())));
+      Set.of(KafkaAssignerEvenRackAwareGoal.class.getSimpleName(), KafkaAssignerDiskUsageDistributionGoal.class.getSimpleName());
 
   private RunnableUtils() {
   }
 
   /**
    * Populate cluster rack information for topics to change replication factor. In the process this method also conducts a sanity
-   * check to ensure that there are enough racks in the cluster to allocate new replicas to racks which do not host replica
-   * of the same partition.
+   * check to ensure that there are enough brokers and racks in the cluster to allocate new replicas to racks which do not host
+   * replica of the same partition.
    *
    * @param topicsByReplicationFactor Topics to change replication factor by target replication factor.
    * @param cluster Current cluster state.
-   * @param excludedBrokersForReplicaMove Set of brokers which do not host new replicas.
    * @param skipTopicRackAwarenessCheck Whether to skip the rack awareness sanity check or not.
    * @param brokersByRack Mapping from rack to broker.
    * @param rackByBroker Mapping from broker to rack.
    */
   public static void populateRackInfoForReplicationFactorChange(Map<Short, Set<String>> topicsByReplicationFactor,
                                                                 Cluster cluster,
-                                                                Set<Integer> excludedBrokersForReplicaMove,
                                                                 boolean skipTopicRackAwarenessCheck,
                                                                 Map<String, List<Integer>> brokersByRack,
                                                                 Map<Integer, String> rackByBroker) {
     for (Node node : cluster.nodes()) {
-      // New follower replica is not assigned to brokers excluded for replica movement.
-      if (excludedBrokersForReplicaMove.contains(node.id())) {
-        continue;
-      }
-      // If the rack is not specified, we use the broker id info as rack info.
-      String rack = node.rack() == null || node.rack().isEmpty() ? String.valueOf(node.id()) : node.rack();
+      String rack = getRackHandleNull(node);
       brokersByRack.putIfAbsent(rack, new ArrayList<>());
       brokersByRack.get(rack).add(node.id());
       rackByBroker.put(node.id(), rack);
     }
 
     topicsByReplicationFactor.forEach((replicationFactor, topics) -> {
-      if (replicationFactor > brokersByRack.size()) {
+      if (replicationFactor > rackByBroker.size()) {
+        throw new RuntimeException(String.format("Unable to change replication factor (RF) of topics %s to %d since there are only %d "
+                                                 + "alive brokers in the cluster. Requested RF cannot be more than number of alive brokers.",
+                                                 topics, replicationFactor, rackByBroker.size()));
+      } else if (replicationFactor > brokersByRack.size()) {
         if (skipTopicRackAwarenessCheck) {
-          LOG.info("Target replication factor for topics {} is {}, which is larger than number of racks in cluster. Rack-awareness "
-                   + "property will be violated to add new replicas.", topics, replicationFactor);
+          LOG.info("Target replication factor for topics {} is {}, which is larger than the number of racks in cluster. Hence, the same rack"
+                   + " will contain more than one replicas from the same partition.", topics, replicationFactor);
         } else {
           throw new RuntimeException(String.format("Unable to change replication factor of topics %s to %d since there are only %d "
                                                    + "racks in the cluster, to skip the rack-awareness check, set %s to true in the request.",
@@ -124,7 +130,7 @@ public class RunnableUtils {
    */
   public static Map<Short, Set<String>> topicsForReplicationFactorChange(Map<Short, Pattern> topicPatternByReplicationFactor,
                                                                          Cluster cluster) {
-    Map<Short, Set<String>> topicsToChangeByReplicationFactor = new HashMap<>(topicPatternByReplicationFactor.size());
+    Map<Short, Set<String>> topicsToChangeByReplicationFactor = new HashMap<>();
     for (Map.Entry<Short, Pattern> entry : topicPatternByReplicationFactor.entrySet()) {
       short replicationFactor = entry.getKey();
       Pattern topicPattern = entry.getValue();
@@ -154,8 +160,8 @@ public class RunnableUtils {
    * Check if the ClusterAndGeneration needs to be refreshed to retrieve the requested substates.
    *
    * @param substates Substates for which the need for refreshing the ClusterAndGeneration will be evaluated.
-   * @return True if substates contain {@link CruiseControlState.SubState#ANALYZER} or
-   * {@link CruiseControlState.SubState#MONITOR}, false otherwise.
+   * @return {@code true} if substates contain {@link CruiseControlState.SubState#ANALYZER} or
+   * {@link CruiseControlState.SubState#MONITOR}, {@code false} otherwise.
    */
   public static boolean shouldRefreshClusterAndGeneration(Set<CruiseControlState.SubState> substates) {
     return substates.stream()
@@ -185,7 +191,7 @@ public class RunnableUtils {
    * Check whether any of the given goals contain a Kafka Assigner goal.
    *
    * @param goals The goals to check
-   * @return True if the given goals contain a Kafka Assigner goal, false otherwise.
+   * @return {@code true} if the given goals contain a Kafka Assigner goal, {@code false} otherwise.
    */
   public static boolean isKafkaAssignerMode(Collection<String> goals) {
     return goals.stream().anyMatch(KAFKA_ASSIGNER_GOALS::contains);
@@ -204,6 +210,121 @@ public class RunnableUtils {
   }
 
   /**
+   * Gracefully stop the ongoing execution (if any) and wait until the execution stops. Exceptional cases:
+   * <ul>
+   *   <li>If there is no ongoing Cruise Control execution, this call is a noop.</li>
+   *   <li>If another request has asked for modifying the ongoing execution, then throw an exception.</li>
+   * </ul>
+   *
+   * The caller of this method should be aware that the following scenario is possible and acceptable:
+   * <ol>
+   *   <li>A user request calls this function to stop the ongoing execution.</li>
+   *   <li>This function stops the ongoing execution -- i.e. the execution state now is
+   *   {@link com.linkedin.kafka.cruisecontrol.executor.ExecutorState.State#NO_TASK_IN_PROGRESS}.</li>
+   *   <li>Before the caller of this function would start a new execution, another user request (or self-healing)
+   *   can start a new execution.</li>
+   * </ol>
+   *
+   * @param kafkaCruiseControl The Kafka Cruise Control instance.
+   * @param operationProgress The progress for the job.
+   */
+  public static void maybeStopOngoingExecutionToModifyAndWait(KafkaCruiseControl kafkaCruiseControl,
+                                                              OperationProgress operationProgress) {
+    if (!kafkaCruiseControl.hasOngoingExecution()) {
+      LOG.info("There is already no ongoing Cruise Control execution. Skip stopping execution.");
+      return;
+    } else if (!kafkaCruiseControl.modifyOngoingExecution(true)) {
+      throw new IllegalStateException("Another request has asked for modifying the ongoing execution.");
+    }
+
+    LOG.info("Gracefully stopping the ongoing execution...");
+
+    WaitingForOngoingExecutionToStop step = new WaitingForOngoingExecutionToStop();
+    operationProgress.addStep(step);
+
+    while (kafkaCruiseControl.executionState() != NO_TASK_IN_PROGRESS) {
+      // Stop ongoing execution, and wait for the execution to stop.
+      try {
+        kafkaCruiseControl.userTriggeredStopExecution(false);
+        Thread.sleep(kafkaCruiseControl.executionProgressCheckIntervalMs());
+      } catch (InterruptedException e) {
+        kafkaCruiseControl.modifyOngoingExecution(false);
+        throw new IllegalStateException("Interrupted while waiting for gracefully stopping the ongoing execution.");
+      }
+    }
+    step.done();
+  }
+
+  /**
+   * Compute optimization options, update recently removed and demoted brokers (if not dryRun) and return the computed result.
+   *
+   * @param clusterModel The state of the cluster.
+   * @param isTriggeredByGoalViolation {@code true} if proposals is triggered by goal violation, {@code false} otherwise.
+   * @param kafkaCruiseControl The Kafka Cruise Control instance.
+   * @param brokersToDrop Brokers to drop from recently removed and demoted brokers. Modifies the actual values if not dryRun.
+   * @param dryRun {@code true} if dryrun, {@code false} otherwise.
+   * @param excludeRecentlyDemotedBrokers Exclude recently demoted brokers from proposal generation for leadership transfer.
+   * @param excludeRecentlyRemovedBrokers Exclude recently removed brokers from proposal generation for replica transfer.
+   * @param excludedTopicsPattern The topics that should be excluded from the optimization action.
+   * @param requestedDestinationBrokerIds Explicitly requested destination broker Ids to limit the replica movement to
+   *                                      these brokers (if empty, no explicit filter is enforced -- cannot be null).
+   * @param onlyMoveImmigrantReplicas {@code true} to move only immigrant replicas, {@code false} otherwise.
+   * @param fastMode {@code true} to compute proposals in fast mode, {@code false} otherwise.
+   * @return Computed optimization options.
+   */
+  public static OptimizationOptions computeOptimizationOptions(ClusterModel clusterModel,
+                                                               boolean isTriggeredByGoalViolation,
+                                                               KafkaCruiseControl kafkaCruiseControl,
+                                                               Set<Integer> brokersToDrop,
+                                                               boolean dryRun,
+                                                               boolean excludeRecentlyDemotedBrokers,
+                                                               boolean excludeRecentlyRemovedBrokers,
+                                                               Pattern excludedTopicsPattern,
+                                                               Set<Integer> requestedDestinationBrokerIds,
+                                                               boolean onlyMoveImmigrantReplicas,
+                                                               boolean fastMode) {
+
+    // Update recently removed and demoted brokers.
+    RecentBrokers recentBrokers = maybeDropFromRecentBrokers(kafkaCruiseControl, brokersToDrop, dryRun);
+
+    Set<Integer> excludedBrokersForLeadership = excludeRecentlyDemotedBrokers ? recentBrokers.recentlyDemotedBrokers()
+                                                                              : Collections.emptySet();
+
+    Set<Integer> excludedBrokersForReplicaMove = excludeRecentlyRemovedBrokers ? recentBrokers.recentlyRemovedBrokers()
+                                                                               : Collections.emptySet();
+
+    Set<String> excludedTopics = kafkaCruiseControl.excludedTopics(clusterModel, excludedTopicsPattern);
+    LOG.debug("Topics excluded from partition movement: {}", excludedTopics);
+    return new OptimizationOptions(excludedTopics, excludedBrokersForLeadership, excludedBrokersForReplicaMove,
+                                   isTriggeredByGoalViolation, requestedDestinationBrokerIds, onlyMoveImmigrantReplicas, fastMode);
+  }
+
+  /**
+   * Update recently removed and demoted brokers with the given brokers to drop if the given dryrun is false.
+   *
+   * @param kafkaCruiseControl The Kafka Cruise Control instance.
+   * @param brokersToDrop Brokers to drop from recently removed and demoted brokers (if exist).
+   * @param dryRun {@code true} if dryrun, {@code false} otherwise.
+   * @return Recent brokers that are intended to be excluded from relevant replica and/or leadership transfer operations.
+   */
+  private static RecentBrokers maybeDropFromRecentBrokers(KafkaCruiseControl kafkaCruiseControl,
+                                                          Set<Integer> brokersToDrop,
+                                                          boolean dryRun) {
+    ExecutorState executorState = kafkaCruiseControl.executorState();
+    if (!dryRun) {
+      kafkaCruiseControl.dropRecentBrokers(brokersToDrop, true);
+      kafkaCruiseControl.dropRecentBrokers(brokersToDrop, false);
+      return new RecentBrokers(executorState.recentlyRemovedBrokers(), executorState.recentlyDemotedBrokers());
+    } else {
+      Set<Integer> recentlyRemoved = new HashSet<>(executorState.recentlyRemovedBrokers());
+      recentlyRemoved.removeAll(brokersToDrop);
+      Set<Integer> recentlyDemoted = new HashSet<>(executorState.recentlyDemotedBrokers());
+      recentlyDemoted.removeAll(brokersToDrop);
+      return new RecentBrokers(recentlyRemoved, recentlyDemoted);
+    }
+  }
+
+  /**
    * Sanity check to ensure that the given cluster model contains brokers with offline replicas.
    * @param clusterModel Cluster model for which the existence of an offline replica will be verified.
    */
@@ -218,5 +339,27 @@ public class RunnableUtils {
       throw new IllegalStateException("Cluster has no offline replica on brokers " + clusterModel.brokers() + " to fix.");
     }
     // Has offline replica(s) on a broken disk.
+  }
+
+  /**
+   * A helper class to keep recently removed and demoted brokers that are intended to be excluded from relevant replica
+   * and/or leadership transfer operations.
+   */
+  public static class RecentBrokers {
+    private final Set<Integer> _recentlyRemovedBrokers;
+    private final Set<Integer> _recentlyDemotedBrokers;
+
+    public RecentBrokers(Set<Integer> recentlyRemovedBrokers, Set<Integer> recentlyDemotedBrokers) {
+      _recentlyRemovedBrokers = validateNotNull(recentlyRemovedBrokers, "Attempt to set a null value for recent removed brokers.");
+      _recentlyDemotedBrokers = validateNotNull(recentlyDemotedBrokers, "Attempt to set a null value for recent demoted brokers.");
+    }
+
+    public Set<Integer> recentlyRemovedBrokers() {
+      return _recentlyRemovedBrokers;
+    }
+
+    public Set<Integer> recentlyDemotedBrokers() {
+      return _recentlyDemotedBrokers;
+    }
   }
 }

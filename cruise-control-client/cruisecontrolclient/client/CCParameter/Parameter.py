@@ -17,7 +17,7 @@ class AbstractParameter(metaclass=ABCMeta):
     # value for this.
     #
     # This property is meant to correspond to the parameters listed at
-    # https://github.com/linkedin/cruise-control/tree/master/cruise-control/src/main/java/com/linkedin/kafka/cruisecontrol/servlet/parameters
+    # https://github.com/linkedin/cruise-control/tree/migrate_to_kafka_2_4/cruise-control/src/main/java/com/linkedin/kafka/cruisecontrol/servlet/parameters
     name: ClassVar[str] = None
     description: ClassVar[str] = None
     # Define a convenience data structure to help in programmatically building CLIs
@@ -96,9 +96,13 @@ class PartitionParameter(AbstractParameter):
 
 
 class ReasonParameter(AbstractParameter):
-    """reason=[reason-for-pause]"""
+    """
+    reason=[reason-for-pause]
+    reason=[reason-for-request]
+    reason=[reason-for-review]
+    """
     name = 'reason'
-    description = 'The reason for pausing or resuming the sampling'
+    description = 'The human-readable reason for this action'
     argparse_properties = {
         'args': ('--reason',),
         'kwargs': dict(help=description, metavar='REASON', type=str)
@@ -111,6 +115,7 @@ class ReasonParameter(AbstractParameter):
         RFC-3986 "reserved" characters.
 
         See https://tools.ietf.org/html/rfc3986#section-2.2
+        See also https://xkcd.com/327/
         :return:
         """
         gen_delims = set(":/?#[]@")

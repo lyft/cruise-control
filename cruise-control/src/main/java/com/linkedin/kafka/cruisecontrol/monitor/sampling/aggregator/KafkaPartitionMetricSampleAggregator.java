@@ -12,6 +12,7 @@ import com.linkedin.cruisecontrol.monitor.sampling.aggregator.MetricSampleAggreg
 import com.linkedin.kafka.cruisecontrol.async.progress.OperationProgress;
 import com.linkedin.kafka.cruisecontrol.async.progress.RetrievingMetrics;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
+import com.linkedin.kafka.cruisecontrol.config.constants.MonitorConfig;
 import com.linkedin.kafka.cruisecontrol.monitor.ModelCompletenessRequirements;
 import com.linkedin.kafka.cruisecontrol.monitor.metricdefinition.KafkaMetricDef;
 import com.linkedin.kafka.cruisecontrol.monitor.sampling.holder.PartitionEntity;
@@ -53,14 +54,14 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
    * @param metadata The metadata of the cluster.
    */
   public KafkaPartitionMetricSampleAggregator(KafkaCruiseControlConfig config, Metadata metadata) {
-    super(config.getInt(KafkaCruiseControlConfig.NUM_PARTITION_METRICS_WINDOWS_CONFIG),
-          config.getLong(KafkaCruiseControlConfig.PARTITION_METRICS_WINDOW_MS_CONFIG),
-          config.getInt(KafkaCruiseControlConfig.MIN_SAMPLES_PER_PARTITION_METRICS_WINDOW_CONFIG).byteValue(),
-          config.getInt(KafkaCruiseControlConfig.PARTITION_METRIC_SAMPLE_AGGREGATOR_COMPLETENESS_CACHE_SIZE_CONFIG),
+    super(config.getInt(MonitorConfig.NUM_PARTITION_METRICS_WINDOWS_CONFIG),
+          config.getLong(MonitorConfig.PARTITION_METRICS_WINDOW_MS_CONFIG),
+          config.getInt(MonitorConfig.MIN_SAMPLES_PER_PARTITION_METRICS_WINDOW_CONFIG).byteValue(),
+          config.getInt(MonitorConfig.PARTITION_METRIC_SAMPLE_AGGREGATOR_COMPLETENESS_CACHE_SIZE_CONFIG),
           KafkaMetricDef.commonMetricDef());
     _metadata = metadata;
     _maxAllowedExtrapolationsPerPartition =
-        config.getInt(KafkaCruiseControlConfig.MAX_ALLOWED_EXTRAPOLATIONS_PER_PARTITION_CONFIG);
+        config.getInt(MonitorConfig.MAX_ALLOWED_EXTRAPOLATIONS_PER_PARTITION_CONFIG);
     _sampleType = SampleType.PARTITION;
 
   }
@@ -69,7 +70,7 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
    * Add a sample to the metric aggregator. This method is thread safe.
    *
    * @param sample The metric sample to add.
-   * @return True if the sample is accepted, false if the sample is ignored.
+   * @return {@code true} if the sample is accepted, {@code false} if the sample is ignored.
    */
   public boolean addSample(PartitionMetricSample sample) {
     return addSample(sample, true);
@@ -81,7 +82,7 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
    * @param sample The metric sample to add.
    * @param leaderValidation whether perform the leader validation or not.
    *
-   * @return True if the sample is accepted, false if the sample is ignored.
+   * @return {@code true} if the sample is accepted, {@code false} if the sample is ignored.
    */
   public boolean addSample(PartitionMetricSample sample, boolean leaderValidation) {
     // Sanity check the sample
@@ -171,7 +172,7 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
 
   /**
    * Get a sorted set of valid windows in the aggregator. A valid window is a window with
-   * {@link KafkaCruiseControlConfig#MIN_VALID_PARTITION_RATIO_CONFIG enough valid partitions}
+   * {@link MonitorConfig#MIN_VALID_PARTITION_RATIO_CONFIG enough valid partitions}
    * being monitored. A valid partition must be valid in all the windows in the returned set.
    *
    * @param cluster Kafka cluster.
@@ -237,13 +238,13 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
     return allPartitions;
   }
 
-  private SortedSet<Long> windowIndicesToWindows(SortedSet<Long> original, long windowMs) {
+  private static SortedSet<Long> windowIndicesToWindows(SortedSet<Long> original, long windowMs) {
     SortedSet<Long> result = new TreeSet<>(Collections.reverseOrder());
     original.forEach(idx -> result.add(idx * windowMs));
     return result;
   }
 
-  private <T> SortedMap<Long, T> windowIndicesToWindows(SortedMap<Long, T> original, long windowMs) {
+  private static <T> SortedMap<Long, T> windowIndicesToWindows(SortedMap<Long, T> original, long windowMs) {
     SortedMap<Long, T> result = new TreeMap<>(Collections.reverseOrder());
     original.forEach((key, value) -> result.put(key * windowMs, value));
     return result;
@@ -260,23 +261,24 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
    *
    * @param sample the sample to do the sanity check.
    * @param leaderValidation whether do the leader validation or not.
-   * @return <tt>true</tt> if the sample is valid.
+   * @return {@code true} if the sample is valid.
    */
   private boolean isValidSample(PartitionMetricSample sample, boolean leaderValidation) {
     boolean validLeader = true;
     if (leaderValidation) {
       Node leader = _metadata.fetch().leaderFor(sample.entity().tp());
-      validLeader = (leader != null) && (sample.brokerId() == leader.id());
+      validLeader = leader != null && sample.brokerId() == leader.id();
       if (!validLeader) {
         LOG.warn("The metric sample is discarded due to invalid leader. Current leader {}, Sample: {}", leader, sample);
       }
     }
 
     // TODO: We do not have the replication bytes rate at this point. Use the default validation after they are available.
-    boolean completeMetrics = sample.isValid(_metricDef)
-                              || (sample.allMetricValues().size() == _metricDef.size() - 2
-                                  && sample.allMetricValues().containsKey(_metricDef.metricInfo(KafkaMetricDef.REPLICATION_BYTES_IN_RATE.name()).id())
-                                  && sample.allMetricValues().containsKey(_metricDef.metricInfo(KafkaMetricDef.REPLICATION_BYTES_OUT_RATE.name()).id()));
+    boolean completeMetrics = sample.isValid(_metricDef) || (sample.allMetricValues().size() == _metricDef.size() - 2
+                                                             && sample.allMetricValues().containsKey(_metricDef.metricInfo(
+                                                                 KafkaMetricDef.REPLICATION_BYTES_IN_RATE.name()).id())
+                                                             && sample.allMetricValues().containsKey(_metricDef.metricInfo(
+                                                                 KafkaMetricDef.REPLICATION_BYTES_OUT_RATE.name()).id()));
 
     if (!completeMetrics) {
       LOG.warn("The metric sample is discarded due to missing metrics. Sample: {}", sample);
@@ -287,6 +289,7 @@ public class KafkaPartitionMetricSampleAggregator extends MetricSampleAggregator
   private AggregationOptions<String, PartitionEntity> toAggregationOptions(Cluster cluster,
                                                                            ModelCompletenessRequirements requirements) {
     Set<PartitionEntity> allPartitions = allPartitions(cluster);
+    LOG.debug("Fetching {} partition entities from the cluster metadata.", allPartitions.size());
     return new AggregationOptions<>(requirements.minMonitoredPartitionsPercentage(),
                                     0.0,
                                     requirements.minRequiredNumWindows(),

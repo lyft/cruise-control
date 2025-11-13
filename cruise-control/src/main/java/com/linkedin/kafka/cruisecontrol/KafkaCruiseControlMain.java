@@ -4,139 +4,55 @@
 
 package com.linkedin.kafka.cruisecontrol;
 
-import com.codahale.metrics.JmxReporter;
-import com.codahale.metrics.MetricRegistry;
-import com.linkedin.kafka.cruisecontrol.async.AsyncKafkaCruiseControl;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
-import com.linkedin.kafka.cruisecontrol.servlet.KafkaCruiseControlServlet;
-import java.io.FileInputStream;
-import java.io.InputStream;
-import java.util.Properties;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.eclipse.jetty.servlet.DefaultServlet;
-import java.net.InetSocketAddress;
-import org.eclipse.jetty.server.NCSARequestLog;
+import com.linkedin.kafka.cruisecontrol.config.constants.WebServerConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static com.linkedin.kafka.cruisecontrol.KafkaCruiseControlUtils.readConfig;
 
 /**
  * The main class to run Kafka Cruise Control.
  */
-public class KafkaCruiseControlMain {
-  private static final String METRIC_DOMAIN = "kafka.cruisecontrol";
-  // Default API protocol exposed by the webserver
-  private static final String DEFAULT_API_PROTOCOL = "http";
+public final class KafkaCruiseControlMain {
+  private static final Logger LOG = LoggerFactory.getLogger(KafkaCruiseControlMain.class);
 
-  private KafkaCruiseControlMain() {
-
-  }
+  private KafkaCruiseControlMain() { }
 
   /**
    * The main function to run Cruise Control.
    * @param args Arguments passed while starting Cruise Control.
    */
   public static void main(String[] args) throws Exception {
-    // Check the command line arguments.
     if (args.length == 0) {
-      printErrorMessageAndDie();
+      throw new IllegalArgumentException(
+              String.format("USAGE: java %s cruisecontrol.properties [port] [ipaddress|hostname]",
+                      KafkaCruiseControlMain.class.getSimpleName()));
     }
 
-    // Load all the properties.
-    Properties props = new Properties();
-    try (InputStream propStream = new FileInputStream(args[0])) {
-      props.load(propStream);
-    }
+    Thread.setDefaultUncaughtExceptionHandler((t, e) -> LOG.error("Uncaught exception on thread {}", t, e));
+    KafkaCruiseControlConfig config = readConfig(args[0]);
+    Integer port = parsePort(args, config);
+    String hostname = parseHostname(args, config);
+    KafkaCruiseControlApp app = KafkaCruiseControlUtils.getCruiseControlApp(config, port, hostname);
+    app.registerShutdownHook();
+    app.start();
+  }
 
-    // Get the configuration for Cruise Control
-    KafkaCruiseControlConfig config = new KafkaCruiseControlConfig(props);
-
-    int port = config.getInt(KafkaCruiseControlConfig.WEBSERVER_HTTP_PORT_CONFIG);
+  private static Integer parsePort(String[] args, KafkaCruiseControlConfig config) {
     if (args.length > 1) {
-      try {
-        port = Integer.parseInt(args[1]);
-      } catch (Exception e) {
-        printErrorMessageAndDie();
-      }
+      return Integer.parseInt(args[1]);
+    } else {
+      return config.getInt(WebServerConfig.WEBSERVER_HTTP_PORT_CONFIG);
     }
-    // Future ssl bits
-    String protocol = DEFAULT_API_PROTOCOL;
+  }
 
-    // For security reasons listen on the loopback address by default
-    // Give preference to cmd-line bind address
-    String hostname = config.getString(KafkaCruiseControlConfig.WEBSERVER_HTTP_ADDRESS_CONFIG);
+  private static String parseHostname(String[] args, KafkaCruiseControlConfig config) {
     if (args.length > 2) {
-      hostname = args[2];
+      return args[2];
+    } else {
+      return config.getString(WebServerConfig.WEBSERVER_HTTP_ADDRESS_CONFIG);
     }
-
-    MetricRegistry dropwizardMetricsRegistry = new MetricRegistry();
-    JmxReporter jmxReporter = JmxReporter.forRegistry(dropwizardMetricsRegistry).inDomain(METRIC_DOMAIN).build();
-    jmxReporter.start();
-
-    AsyncKafkaCruiseControl kafkaCruiseControl = new AsyncKafkaCruiseControl(config,
-                                                                             dropwizardMetricsRegistry);
-
-    // Listen on a specific host & port combination
-    Server server = new Server(new InetSocketAddress(hostname, port));
-
-    // Setup Built-in Logger
-    boolean accessLogEnabled = config.getBoolean(KafkaCruiseControlConfig.WEBSERVER_ACCESSLOG_ENABLED);
-    if (accessLogEnabled) {
-      String accessLogPath = config.getString(KafkaCruiseControlConfig.WEBSERVER_ACCESSLOG_PATH);
-      int accessLogRetention = config.getInt(KafkaCruiseControlConfig.WEBSERVER_ACCESSLOG_RETENTION_DAYS);
-      NCSARequestLog requestLog = new NCSARequestLog(accessLogPath);
-      requestLog.setRetainDays(accessLogRetention);
-      requestLog.setLogLatency(true);
-      requestLog.setAppend(true);
-      requestLog.setExtended(false);
-      requestLog.setPreferProxiedForAddress(true);
-      server.setRequestLog(requestLog);
-    }
-
-    // Define context for servlet
-    String sessionPath = config.getString(KafkaCruiseControlConfig.WEBSERVER_SESSION_PATH);
-    ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
-    context.setContextPath(sessionPath);
-    server.setHandler(context);
-
-    // Placeholder for any static content
-    String webuiDir = config.getString(KafkaCruiseControlConfig.WEBSERVER_UI_DISKPATH);
-    String webuiPathPrefix = config.getString(KafkaCruiseControlConfig.WEBSERVER_UI_URLPREFIX);
-    DefaultServlet defaultServlet = new DefaultServlet();
-    ServletHolder holderWebapp = new ServletHolder("default", defaultServlet);
-    // holderWebapp.setInitParameter("org.eclipse.jetty.servlet.Default.dirAllowed", "false");
-    holderWebapp.setInitParameter("resourceBase", webuiDir);
-    context.addServlet(holderWebapp, webuiPathPrefix);
-
-    // Kafka Cruise Control servlet data
-    String apiUrlPrefix = config.getString(KafkaCruiseControlConfig.WEBSERVER_API_URLPREFIX);
-    KafkaCruiseControlServlet kafkaCruiseControlServlet = new KafkaCruiseControlServlet(kafkaCruiseControl,
-                                                                                        dropwizardMetricsRegistry);
-    ServletHolder servletHolder = new ServletHolder(kafkaCruiseControlServlet);
-    context.addServlet(servletHolder, apiUrlPrefix);
-
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-      @Override
-      public void run() {
-        kafkaCruiseControl.shutdown();
-        jmxReporter.close();
-      }
-    });
-    kafkaCruiseControl.startUp();
-    server.start();
-    boolean corsEnabled = config.getBoolean(KafkaCruiseControlConfig.WEBSERVER_HTTP_CORS_ENABLED_CONFIG);
-    System.out.println(">> ********************************************* <<");
-    System.out.println(">> Application directory            : " + System.getProperty("user.dir"));
-    System.out.println(">> REST API available on            : " + apiUrlPrefix);
-    System.out.println(">> Web UI available on              : " + webuiPathPrefix);
-    System.out.println(">> Web UI Directory                 : " + webuiDir);
-    System.out.println(">> Cookie prefix path               : " + sessionPath);
-    System.out.println(">> Kafka Cruise Control started on  : " + protocol + "://" + hostname + ":" + port);
-    System.out.println(">> CORS Enabled ?                   : " + corsEnabled);
-    System.out.println(">> ********************************************* <<");
   }
 
-  private static void printErrorMessageAndDie() {
-    System.out.println(String.format("USAGE: java %s cruisecontrol.properties [port] [ipaddress|hostname]", KafkaCruiseControlMain.class.getSimpleName()));
-    System.exit(-1);
-  }
 }
