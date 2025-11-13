@@ -6,31 +6,39 @@ package com.linkedin.kafka.cruisecontrol.servlet.response.stats;
 
 import com.linkedin.kafka.cruisecontrol.model.Broker;
 import com.linkedin.kafka.cruisecontrol.model.DiskStats;
+import com.linkedin.kafka.cruisecontrol.servlet.response.JsonResponseField;
+import com.linkedin.kafka.cruisecontrol.servlet.response.JsonResponseClass;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-public class SingleBrokerStats {
+@JsonResponseClass
+public class SingleBrokerStats extends BasicStats {
+  @JsonResponseField
   protected static final String HOST = "Host";
+  @JsonResponseField
   protected static final String BROKER = "Broker";
+  @JsonResponseField
+  protected static final String RACK = "Rack";
+  @JsonResponseField
   protected static final String BROKER_STATE = "BrokerState";
+  @JsonResponseField(required = false)
   protected static final String DISK_STATE = "DiskState";
   protected final String _host;
   protected final int _id;
   protected final Broker.State _state;
-  protected final BasicStats _basicStats;
   protected final boolean _isEstimated;
   protected final Map<String, DiskStats> _diskStatsByLogdir;
+  protected final String _rack;
 
-  SingleBrokerStats(String host, int id, Broker.State state, double diskUtil, double cpuUtil, double leaderBytesInRate,
-                    double followerBytesInRate, double bytesOutRate, double potentialBytesOutRate, int numReplicas,
-                    int numLeaders, boolean isEstimated, double diskCapacity, Map<String, DiskStats> diskStatsByLogdir) {
-    _host = host;
-    _id = id;
-    _state = state;
-    _basicStats = new BasicStats(diskUtil, cpuUtil, leaderBytesInRate, followerBytesInRate, bytesOutRate,
-                                 potentialBytesOutRate, numReplicas, numLeaders, diskCapacity);
+  SingleBrokerStats(Broker broker, double potentialBytesOutRate, boolean isEstimated) {
+    super(broker, potentialBytesOutRate);
+    _host = broker.host().name();
+    _id = broker.id();
+    _state = broker.state();
     _isEstimated = isEstimated;
-    _diskStatsByLogdir = diskStatsByLogdir;
+    _diskStatsByLogdir = broker.diskStats();
+    _rack = broker.rack().id();
   }
 
   public String host() {
@@ -45,8 +53,8 @@ public class SingleBrokerStats {
     return _id;
   }
 
-  BasicStats basicStats() {
-    return _basicStats;
+  public String rack() {
+    return _rack;
   }
 
   /**
@@ -57,11 +65,11 @@ public class SingleBrokerStats {
    *         replica placement info, otherwise returns an empty map.
    */
   public Map<String, DiskStats> diskStatsByLogdir() {
-    return _diskStatsByLogdir;
+    return Collections.unmodifiableMap(_diskStatsByLogdir);
   }
 
   /**
-   * @return True if the broker capacity has been estimated, false otherwise.
+   * @return {@code true} if the broker capacity has been estimated, {@code false} otherwise.
    */
   public boolean isEstimated() {
     return _isEstimated;
@@ -70,16 +78,17 @@ public class SingleBrokerStats {
   /**
    * @return An object that can be further used to encode into JSON.
    */
-  public Map<String, Object> getJSONStructure() {
-    Map<String, Object> entry = _basicStats.getJSONStructure();
+  public Map<String, Object> getJsonStructure() {
+    Map<String, Object> entry = super.getJsonStructure();
     entry.put(HOST, _host);
     entry.put(BROKER, _id);
     entry.put(BROKER_STATE, _state);
     if (!_diskStatsByLogdir.isEmpty()) {
-      Map<String, Object>  diskStates = new HashMap<>(_diskStatsByLogdir.size());
-      _diskStatsByLogdir.forEach((k, v) -> diskStates.put(k, v.getJSONStructure()));
+      Map<String, Object> diskStates = new HashMap<>();
+      _diskStatsByLogdir.forEach((k, v) -> diskStates.put(k, v.getJsonStructure()));
       entry.put(DISK_STATE, diskStates);
     }
+    entry.put(RACK, _rack);
     return entry;
   }
 }

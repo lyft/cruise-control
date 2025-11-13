@@ -4,7 +4,7 @@
 
 package com.linkedin.kafka.cruisecontrol.servlet.parameters;
 
-import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
+import com.linkedin.kafka.cruisecontrol.config.constants.WebServerConfig;
 import com.linkedin.kafka.cruisecontrol.servlet.CruiseControlEndPoint;
 import java.io.UnsupportedEncodingException;
 import java.util.Collections;
@@ -26,9 +26,11 @@ import static com.linkedin.kafka.cruisecontrol.servlet.parameters.ParameterUtils
  * <pre>
  * 1. Pause metrics sampling. (RUNNING -&gt; PAUSED).
  *    POST /kafkacruisecontrol/pause_sampling?json=[true/false]&amp;reason=[reason-for-pause]&amp;review_id=[id]
+ *    &amp;get_response_schema=[true/false]&amp;doAs=[user]
  *
  * 2. Resume metrics sampling. (PAUSED -&gt; RUNNING).
  *    POST /kafkacruisecontrol/resume_sampling?json=[true/false]&amp;reason=[reason-for-resume]&amp;review_id=[id]
+ *    &amp;get_response_schema=[true/false]&amp;doAs=[user]
  * </pre>
  */
 public class PauseResumeParameters extends AbstractParameters {
@@ -50,9 +52,9 @@ public class PauseResumeParameters extends AbstractParameters {
   @Override
   protected void initParameters() throws UnsupportedEncodingException {
     super.initParameters();
-    _reason = ParameterUtils.reason(_request, false);
-    boolean twoStepVerificationEnabled = _config.getBoolean(KafkaCruiseControlConfig.TWO_STEP_VERIFICATION_ENABLED_CONFIG);
-    _reviewId = ParameterUtils.reviewId(_request, twoStepVerificationEnabled);
+    _reason = ParameterUtils.reason(_requestContext, false);
+    boolean twoStepVerificationEnabled = _config.getBoolean(WebServerConfig.TWO_STEP_VERIFICATION_ENABLED_CONFIG);
+    _reviewId = ParameterUtils.reviewId(_requestContext, twoStepVerificationEnabled);
   }
 
   public String reason() {

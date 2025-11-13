@@ -10,12 +10,12 @@ import com.linkedin.kafka.cruisecontrol.analyzer.goals.Goal;
 import com.linkedin.kafka.cruisecontrol.async.progress.OperationProgress;
 import com.linkedin.kafka.cruisecontrol.common.Resource;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
+import com.linkedin.kafka.cruisecontrol.config.constants.AnalyzerConfig;
 import com.linkedin.kafka.cruisecontrol.executor.ExecutionProposal;
 import com.linkedin.kafka.cruisecontrol.executor.Executor;
 import com.linkedin.kafka.cruisecontrol.model.Broker;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModelStats;
-
 import com.linkedin.kafka.cruisecontrol.model.ReplicaPlacementInfo;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
@@ -28,11 +28,11 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.StringJoiner;
-
 import com.linkedin.kafka.cruisecontrol.model.Replica;
 import java.util.stream.Collectors;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.utils.SystemTime;
+import org.apache.kafka.common.utils.Time;
 import org.easymock.EasyMock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +50,7 @@ import org.slf4j.LoggerFactory;
  * (3) {@link DeterministicClusterTest} with different balancing constraints with deterministic clusters.
  * (4) {@link RandomSelfHealingTest} with dead brokers.
  */
-class OptimizationVerifier {
+final class OptimizationVerifier {
   private static final Logger LOG = LoggerFactory.getLogger(OptimizationVerifier.class);
 
   private OptimizationVerifier() {
@@ -137,15 +137,16 @@ class OptimizationVerifier {
     Properties props = KafkaCruiseControlUnitTestUtils.getKafkaCruiseControlProperties();
     StringJoiner stringJoiner = new StringJoiner(",");
     excludedTopics.forEach(stringJoiner::add);
-    props.setProperty(KafkaCruiseControlConfig.TOPICS_EXCLUDED_FROM_PARTITION_MOVEMENT_CONFIG, stringJoiner.toString());
+    props.setProperty(AnalyzerConfig.TOPICS_EXCLUDED_FROM_PARTITION_MOVEMENT_CONFIG, stringJoiner.toString());
     GoalOptimizer goalOptimizer = new GoalOptimizer(new KafkaCruiseControlConfig(constraint.setProps(props)),
                                                     null,
-                                                    new SystemTime(),
+                                                    Time.SYSTEM,
                                                     new MetricRegistry(),
-                                                    EasyMock.mock(Executor.class));
+                                                    EasyMock.mock(Executor.class),
+                                                    EasyMock.mock(AdminClient.class));
 
-    List<Goal> goalsOfFirstPass = null;
-    OptimizerResult resultOfFirstPass = null;
+    List<Goal> goalsOfFirstPass;
+    OptimizerResult resultOfFirstPass;
     List<Goal> goalsOfSecondPass = null;
     OptimizerResult resultOfSecondPass = null;
 
@@ -169,8 +170,8 @@ class OptimizationVerifier {
     if (LOG.isTraceEnabled()) {
       LOG.trace("Took {} ms to execute {} to generate {} proposals.", System.currentTimeMillis() - startTime,
                 goalByPriority,
-                (resultOfFirstPass == null ? 0 : resultOfFirstPass.goalProposals().size()) +
-                (resultOfSecondPass == null ? 0 : resultOfSecondPass.goalProposals().size()));
+                (resultOfFirstPass == null ? 0 : resultOfFirstPass.goalProposals().size())
+                + (resultOfSecondPass == null ? 0 : resultOfSecondPass.goalProposals().size()));
     }
 
     for (Verification verification : verifications) {
@@ -229,9 +230,7 @@ class OptimizationVerifier {
   }
 
   private static boolean verifyBrokenBrokers(ClusterModel clusterModel) {
-    Set<Broker> deadBrokers = clusterModel.brokers();
-    deadBrokers.removeAll(clusterModel.aliveBrokers());
-    for (Broker deadBroker : deadBrokers) {
+    for (Broker deadBroker : clusterModel.deadBrokers()) {
       if (deadBroker.replicas().size() > 0) {
         LOG.error("Failed to move {} replicas on dead broker {} to other brokers.", deadBroker.replicas().size(),
                   deadBroker.id());
@@ -303,8 +302,8 @@ class OptimizationVerifier {
       }
     }
     for (Broker broker : clusterModel.newBrokers()) {
-      // We can only check the first resource.
-      Resource r = constraint.resources().get(0);
+      // We can only check the disk resource.
+      Resource r = Resource.DISK;
       double utilizationLowerThreshold =
           clusterModel.load().expectedUtilizationFor(r) / clusterModel.capacityFor(r) * (2 - constraint.resourceBalancePercentage(r));
       double brokerUtilization = broker.load().expectedUtilizationFor(r) / broker.capacityFor(r);
